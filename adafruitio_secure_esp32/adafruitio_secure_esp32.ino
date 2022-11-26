@@ -129,6 +129,7 @@ void loop() {
     if (subscription == &userCommand) {
       Serial.print(F("Got: "));
       Serial.println((char *)userCommand.lastread);
+      
     }
   }
 
