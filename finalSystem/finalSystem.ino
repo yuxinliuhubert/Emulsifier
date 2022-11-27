@@ -31,13 +31,21 @@
 
 // pin definitions
 //Define L298N pin mappings
-#define IN1 27
-#define IN2 33
+#define IN1 19
+#define IN2 18
 
 #define encoderY 16
 #define encoderW 17
-#define SDA 21
-#define SCL 22
+// #define SDA 23
+// #define SCL 22
+
+// LCD screen pins
+#define RS 4
+#define EN 5
+#define D7 21
+#define D6 33
+#define D5 15
+#define D4 27
 
 #if SOFTWARE_SERIAL_AVAILABLE
 #include <SoftwareSerial.h>
@@ -120,6 +128,9 @@ const char *adafruitio_root_ca =
 // Adafruit_MQTT_Publish test = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/test");
 
 
+
+
+
 // Motor info
 ESP32Encoder encoder;
 int omegaSpeed = 0;
@@ -133,9 +144,9 @@ int pError = 0;
 
 //Setup interrupt variables ----------------------------
 volatile int count = 0;                  // encoder count
-volatile bool interruptCounter = false;  // check timer interrupt 1
+volatile int sleepMinuteCounter = 0;  // check timer interrupt 1
 volatile bool deltaT = false;            // check timer interrupt 2
-volatile int minuteCounter = 0;
+volatile int shakeMinuteCounter = 0;
 int totalInterrupts = 0;  // counts the number of triggering of the alarm
 hw_timer_t *timer0 = NULL;
 hw_timer_t *timer1 = NULL;
@@ -149,10 +160,11 @@ TaskHandle_t Task2;
 
 uint32_t x = 0;
 
+
 //Initialization ------------------------------------
 void IRAM_ATTR onTime0() {
   portENTER_CRITICAL_ISR(&timerMux0);
-  interruptCounter = true;  // the function to be called when timer interrupt is triggered
+  sleepMinuteCounter++;  // the function to be called when timer interrupt is triggered
   portEXIT_CRITICAL_ISR(&timerMux0);
 }
 
@@ -166,7 +178,7 @@ void IRAM_ATTR onTime1() {
 
 void IRAM_ATTR onTime2() {
   portENTER_CRITICAL_ISR(&timerMux2);
-  minuteCounter--;
+  shakeMinuteCounter--;
   portEXIT_CRITICAL_ISR(&timerMux2);
 }
 
@@ -174,12 +186,15 @@ void IRAM_ATTR onTime2() {
 
 void setup() {
   Serial.begin(115200);
+
   state = 0;
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
+  pinMode(13, OUTPUT);
   // pinMode(encoderY, INPUT);
   // pinMode(encoderW, INPUT);
   Wire.begin(SDA, SCL);
+  digitalWrite(13, HIGH);
   xTaskCreatePinnedToCore(
     Task1code, /* Task function. */
     "Task1",   /* name of task. */
@@ -201,7 +216,6 @@ void setup() {
     &Task2,    /* Task handle to keep track of created task */
     1);        /* pin task to core 1 */
   delay(100);
-
 }
 
 
@@ -212,37 +226,82 @@ void Task1code(void *pvParameters) {
 
   // the loop function on command core
   while (1) {
-    // switch (state) {
-    //   case 0:
-    //     state0CommandCore();
-    //     break;
-    // }
 
-    // Ensure the connection to the MQTT server is alive (this will make the first
+        // Ensure the connection to the MQTT server is alive (this will make the first
     // connection and automatically reconnect when disconnected).  See the MQTT_connect
     // function definition further below.
     MQTT_connect();
+    Adafruit_MQTT_Subscribe *subscription;
+   subscription = mqtt.readSubscription(2000) ;
+    if (subscription == &userCommand) {
+      Serial.print(F("Got: "));
+      Serial.println((char *)userCommand.lastread);
+      String setString = (char *)userCommand.lastread;
+      int setMinutes = setString.toInt();
+      Serial.println("checkpoint 1");
+      portENTER_CRITICAL(&timerMux2);
+      shakeMinuteCounter = setMinutes;
+      portEXIT_CRITICAL(&timerMux2);
+      Serial.println("checkpoint 2");
+      timerRestart(timer2);
+    }
+  
+
+    switch (state) {
+
+      case 0:
+      core0Sleep();
+      break;
+
+      case 1:
+        core0Idle();
+        break;
+
+        case 2:
+        core0Drive();
+        break;
+
+    }
 
     // this is our 'wait for incoming subscription packets' busy subloop
     // try to spend your time here
 
-    Adafruit_MQTT_Subscribe *subscription;
-    while ((subscription = mqtt.readSubscription(5000))) {
-      if (subscription == &userCommand) {
-        Serial.print(F("Got: "));
-        // Serial.println((String *)userCommand.lastread);
-        String setString = (char *) userCommand.lastread;
-        int setMinutes = setString.toInt();
-        portENTER_CRITICAL(&timerMux2);
-       minuteCounter = setMinutes;
-        portEXIT_CRITICAL(&timerMux2);
-        timerRestart(timer2);
-      }
-    }
+    vTaskDelay(10);
   }
+
+
   vTaskDelete(NULL);
 }
 
+
+void core0Sleep() {
+  // if button or knob press, go to state 1
+
+  // if google service, go to state 2
+  if (shakeMinuteCounter > 0) {
+    state = 2;
+  }
+
+  
+}
+
+void core0Idle() {
+   // if google service, go to state 2
+  if (shakeMinuteCounter > 0) {
+    state = 2;
+  }
+
+}
+
+void core0Drive() {
+  // if large button press, go back to state 1
+
+  // if google service cancels, go to state 1
+  if (shakeMinuteCounter = 0) {
+    state = 1;
+  }  
+
+}
 
 
 void Task2code(void *parameter) {
@@ -259,50 +318,56 @@ void Task2code(void *parameter) {
     //     state1MotorCore();
     //     break;
     // }
-    if (minuteCounter > 0) {
+   
+// writeVoltage(150);
+
+    if (shakeMinuteCounter > 0) {
       setSpeed(vDes);
+      
     } else {
       timerStop(timer2);
-    
-      // portENTER_CRITICAL(&timerMux2);
+
+      // po  rtENTER_CRITICAL(&timerMux2);
       //  minuteCounter = 0;
       //   portEXIT_CRITICAL(&timerMux2);
-        stopMoving();
-        
-        // Serial.println(String() + "speed is: "+ count);
-        
+      stopMoving();
+      
+
+      // Serial.println(String() + "speed is: "+ count);
     }
-    // Serial.println(String() + "speed is: "+ count);
+    Serial.println(String() + "speed is: " + count);
     // important so that the watchdog bug doesnt get triggered
-    Serial.println(minuteCounter);
+    Serial.println(shakeMinuteCounter);
     vTaskDelay(10);
   }
   vTaskDelete(NULL);
 }
 
 
-// Motor driving core (core 0) code
+// Motor driving core (core 1) code
 
 void motorCoreSetup() {
-Serial.println("check 1");
+  Serial.println("check 1");
   ESP32Encoder::useInternalWeakPullResistors = UP;  // Enable the weak pull up resistors
   encoder.attachHalfQuad(encoderY, encoderW);       // Attache pins for use as encoder pins
   encoder.setCount(0);                              // set starting count value after attaching
-Serial.println("check 2");
+
+  timer0 = timerBegin(0, 80, true);              // timer 0, MWDT clock period = 12.5 ns * TIMGn_Tx_WDT_CLK_PRESCALE -> 12.5 ns * 80 -> 1000 ns = 1 us, countUp
+  timerAttachInterrupt(timer0, &onTime0, true);  // edge (not level) triggered
+  timerAlarmWrite(timer0, 60000000, true);       // 60000000 * 1 us = 60 s, autoreload true
+  timerAlarmEnable(timer0);                      // enable
 
   timer1 = timerBegin(1, 80, true);              // timer 1, MWDT clock period = 12.5 ns * TIMGn_Tx_WDT_CLK_PRESCALE -> 12.5 ns * 80 -> 1000 ns = 1 us, countUp
   timerAttachInterrupt(timer1, &onTime1, true);  // edge (not level) triggered
   timerAlarmWrite(timer1, 10000, true);          // 10000 * 1 us = 10 ms, autoreload true
   timerAlarmEnable(timer1);                      // enable
-  // timerStart(timer1);
-
-Serial.println("check 3");
+  
+  
+  
   timer2 = timerBegin(2, 80, true);              // timer 2, MWDT clock period = 12.5 ns * TIMGn_Tx_WDT_CLK_PRESCALE -> 12.5 ns * 80 -> 1000 ns = 1 us, countUp
   timerAttachInterrupt(timer2, &onTime2, true);  // edge (not level) triggered
   timerAlarmWrite(timer2, 60000000, true);       // 60000000 * 1 us = 60 s, autoreload true
   timerAlarmEnable(timer2);                      // enable
-  
-  Serial.println("check 4");
 }
 
 
@@ -310,21 +375,20 @@ void stopMoving() {
   writeVoltage(0);
 }
 
-// command core code (core 1)
+// command core code (core 0)
 void commandCoreSetup() {
   Serial.println();
   Serial.println();
+
+
+  
   Serial.print("Connecting to ");
   Serial.println(WLAN_SSID);
 
-  delay(1000);
-
+  
   WiFi.begin(WLAN_SSID, WLAN_PASS);
-  delay(2000);
 
   while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
   }
   Serial.println();
 
@@ -339,6 +403,8 @@ void commandCoreSetup() {
   // Set Adafruit IO's root CA
   client.setCACert(adafruitio_root_ca);
 }
+
+
 
 void loop() {
 }
@@ -367,35 +433,33 @@ void setSpeed(int inputVDes) {
     }
 
     int D = calculateD(vDifference, iError, dError);
-  
-    writeVoltage(D);
 
-  
+    writeVoltage(D);
   }
 }
 
 void writeVoltage(int D) {
   if (D >= MAX_PWM_VOLTAGE) {
-      D = MAX_PWM_VOLTAGE;
-    }
-    if (D <= -MAX_PWM_VOLTAGE) {
-      D = -MAX_PWM_VOLTAGE;
-    }
+    D = MAX_PWM_VOLTAGE;
+  }
+  if (D <= -MAX_PWM_VOLTAGE) {
+    D = -MAX_PWM_VOLTAGE;
+  }
 
-    if (D > 0) {
-      analogWrite(IN1, LOW);
-      analogWrite(IN2, D);
-    } else if (D < 0) {
-      analogWrite(IN1, -D);
-      analogWrite(IN2, LOW);
-    } else {
-      analogWrite(IN1, LOW);
-      analogWrite(IN2, LOW);
-    }
+  if (D > 0) {
+    analogWrite(IN1, LOW);
+    analogWrite(IN2, D);
+  } else if (D < 0) {
+    analogWrite(IN1, -D);
+    analogWrite(IN2, LOW);
+  } else {
+    analogWrite(IN1, LOW);
+    analogWrite(IN2, LOW);
+  }
 }
 
 void printSpeed() {
-   Serial.println(String() + F("speed is: ") + count);
+  Serial.println(String() + F("speed is: ") + count);
 }
 
 int calculateD(int difference, int iError, int dError) {
@@ -415,9 +479,9 @@ void MQTT_connect() {
   uint8_t retries = 3;
   while ((ret = mqtt.connect()) != 0) {  // connect will return 0 for connected
     Serial.println(mqtt.connectErrorString(ret));
-    Serial.println("Retrying MQTT connection in 5 seconds...");
+    Serial.println("Retrying MQTT connection in 2 seconds...");
     mqtt.disconnect();
-    delay(5000);  // wait 5 seconds
+    delay(2000);  // wait 5 seconds
     retries--;
     if (retries == 0) {
       // basically die and wait for WDT to reset me
