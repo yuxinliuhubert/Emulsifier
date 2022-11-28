@@ -2,8 +2,8 @@
 
 // speeds
 #define Ksp 8
-#define Ksi 3
-#define Ksd 0
+#define Ksi 5
+#define Ksd 2
 
 #define sIMax 50
 

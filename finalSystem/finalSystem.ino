@@ -232,17 +232,15 @@ void Task1code(void *pvParameters) {
     // function definition further below.
     MQTT_connect();
     Adafruit_MQTT_Subscribe *subscription;
-   subscription = mqtt.readSubscription(2000) ;
+   subscription = mqtt.readSubscription(100) ;
     if (subscription == &userCommand) {
       Serial.print(F("Got: "));
       Serial.println((char *)userCommand.lastread);
       String setString = (char *)userCommand.lastread;
       int setMinutes = setString.toInt();
-      Serial.println("checkpoint 1");
       portENTER_CRITICAL(&timerMux2);
       shakeMinuteCounter = setMinutes;
       portEXIT_CRITICAL(&timerMux2);
-      Serial.println("checkpoint 2");
       timerRestart(timer2);
     }
   
@@ -297,7 +295,7 @@ void core0Drive() {
   // if large button press, go back to state 1
 
   // if google service cancels, go to state 1
-  if (shakeMinuteCounter = 0) {
+  if (shakeMinuteCounter == 0) {
     state = 1;
   }  
 
