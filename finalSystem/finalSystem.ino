@@ -28,6 +28,7 @@
 #include <ESP32Encoder.h>
 #include "analogWrite.h"
 #include <Wire.h>
+#include <LiquidCrystal.h>
 
 // pin definitions
 //Define L298N pin mappings
@@ -46,6 +47,15 @@
 #define D6 33
 #define D5 15
 #define D4 27
+
+#define mainButton 25
+
+#define ROTARY_ENCODER_A_PIN 22
+#define ROTARY_ENCODER_B_PIN 14
+#define ROTARY_ENCODER_BUTTON_PIN 36
+#define ROTARY_ENCODER_VCC_PIN -1
+#define ROTARY_ENCODER_STEPS 4
+
 
 #if SOFTWARE_SERIAL_AVAILABLE
 #include <SoftwareSerial.h>
@@ -96,6 +106,50 @@ Adafruit_MQTT_Client mqtt(&client, AIO_SERVER, AIO_SERVERPORT, AIO_USERNAME, AIO
 // Setup a feed called 'userCommand' for subscribing.
 Adafruit_MQTT_Subscribe userCommand = Adafruit_MQTT_Subscribe(&mqtt, AIO_USERNAME "/feeds/ME126");
 
+//instead of changing here, rather change numbers above
+AiEsp32RotaryEncoder rotaryEncoder = AiEsp32RotaryEncoder(ROTARY_ENCODER_A_PIN, ROTARY_ENCODER_B_PIN, ROTARY_ENCODER_BUTTON_PIN, ROTARY_ENCODER_VCC_PIN, ROTARY_ENCODER_STEPS);
+
+
+// LCD screen
+// custom characters doc
+//https :forums.parallax.com/uploads/attachments/40445/40177.pdf
+LiquidCrystal lcd(RS, EN, D4, D5, D6, D7);
+byte hourglass_down[8] = {
+  0b00000,
+  0b11111,
+  0b11111,
+  0b01110,
+  0b00100,
+  0b01010,
+  0b10001,
+  0b11111
+};
+
+byte hourglass_up[8] = {
+  0b00000,
+  0b11111,
+  0b10001,
+  0b01010,
+  0b00100,
+  0b01110,
+  0b11111,
+  0b11111
+};
+
+byte smiley[8] = {
+  0b00000,
+  0b00000,
+  0b01010,
+  0b00000,
+  0b00000,
+  0b10001,
+  0b01110,
+  0b00000
+};
+
+#define hourglassFlashTime 1500
+int hourglassTimeComp = 0;
+
 // io.adafruit.com root CA
 const char *adafruitio_root_ca =
   "-----BEGIN CERTIFICATE-----\n"
@@ -133,6 +187,7 @@ const char *adafruitio_root_ca =
 
 // Motor info
 ESP32Encoder encoder;
+ESP32Encoder rotary;
 int omegaSpeed = 0;
 int omegaDes = 0;
 int omegaMax = 18;  // CHANGE THIS VALUE TO YOUR MEASURED MAXIMUM SPEED
@@ -143,10 +198,14 @@ int dir = 1;
 int pError = 0;
 
 //Setup interrupt variables ----------------------------
-volatile int count = 0;                  // encoder count
+volatile int count = 0;               // encoder count
+volatile int rotaryCount = 0;
 volatile int sleepMinuteCounter = 0;  // check timer interrupt 1
-volatile bool deltaT = false;            // check timer interrupt 2
+volatile bool deltaT = false;         // check timer interrupt 2
 volatile int shakeMinuteCounter = 0;
+int shakeMinutePrevCounter = 0;
+volatile bool mainButtonIsPressed = false;
+volatile bool rotaryButtonIsPressed = false;
 int totalInterrupts = 0;  // counts the number of triggering of the alarm
 hw_timer_t *timer0 = NULL;
 hw_timer_t *timer1 = NULL;
@@ -161,7 +220,18 @@ TaskHandle_t Task2;
 uint32_t x = 0;
 
 
+int userInputSpeedLevel = 1;  // initial setting medium, 0 for low, 2 for high
+int userInputTime = 0;        // preset time, in mins
+
 //Initialization ------------------------------------
+
+void IRAM_ATTR isr() {  // the function to be called when interrupt is triggered
+  mainButtonIsPressed = true;
+}
+
+void IRAM_ATTR rotaryIsr() {
+  rotaryButtonIsPressed = true;
+}
 void IRAM_ATTR onTime0() {
   portENTER_CRITICAL_ISR(&timerMux0);
   sleepMinuteCounter++;  // the function to be called when timer interrupt is triggered
@@ -172,6 +242,9 @@ void IRAM_ATTR onTime1() {
   portENTER_CRITICAL_ISR(&timerMux1);
   count = encoder.getCount();
   encoder.clearCount();
+  rotaryCount = rotary.getCount();
+  rotary.clearCount();
+  
   deltaT = true;  // the function to be called when timer interrupt is triggered
   portEXIT_CRITICAL_ISR(&timerMux1);
 }
@@ -182,19 +255,46 @@ void IRAM_ATTR onTime2() {
   portEXIT_CRITICAL_ISR(&timerMux2);
 }
 
+void IRAM_ATTR readEncoderISR()
+{
+	rotaryEncoder.readEncoder_ISR();
+}
 
 
 void setup() {
   Serial.begin(115200);
 
-  state = 0;
+  state = 1;
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
   pinMode(13, OUTPUT);
-  // pinMode(encoderY, INPUT);
-  // pinMode(encoderW, INPUT);
+  pinMode(mainButton, INPUT_PULLDOWN);
+  // pinMode(rotaryBTN, INPUT_PULLDOWN);
+  attachInterrupt(mainButton, isr, RISING);
+  // attachInterrupt(rotaryBTN, rotaryIsr, RISING);
+ 
   Wire.begin(SDA, SCL);
   digitalWrite(13, HIGH);
+  // set up the LCD's number of columns and rows:
+  lcd.begin(16, 2);
+
+	//we must initialize rotary encoder
+	rotaryEncoder.begin();
+	rotaryEncoder.setup(readEncoderISR);
+	//set boundaries and if values should cycle or not
+	//in this example we will set possible values between 0 and 1000;
+	bool circleValues = true;
+	rotaryEncoder.setBoundaries(1, 60, circleValues); //minValue, maxValue, circleValues true|false (when max go to min and vice versa)
+
+	/*Rotary acceleration introduced 25.2.2021.
+   * in case range to select is huge, for example - select a value between 0 and 1000 and we want 785
+   * without accelerateion you need long time to get to that number
+   * Using acceleration, faster you turn, faster will the value raise.
+   * For fine tuning slow down.
+   */
+	//rotaryEncoder.disableAcceleration(); //acceleration is now enabled by default - disable if you dont need it
+	rotaryEncoder.setAcceleration(15); //or set the value - larger number = more accelearation; 0 or 1 means disabled acceleration
+
   xTaskCreatePinnedToCore(
     Task1code, /* Task function. */
     "Task1",   /* name of task. */
@@ -227,38 +327,34 @@ void Task1code(void *pvParameters) {
   // the loop function on command core
   while (1) {
 
-        // Ensure the connection to the MQTT server is alive (this will make the first
+    // Ensure the connection to the MQTT server is alive (this will make the first
     // connection and automatically reconnect when disconnected).  See the MQTT_connect
     // function definition further below.
     MQTT_connect();
     Adafruit_MQTT_Subscribe *subscription;
-   subscription = mqtt.readSubscription(100) ;
+    subscription = mqtt.readSubscription(100);
     if (subscription == &userCommand) {
       Serial.print(F("Got: "));
       Serial.println((char *)userCommand.lastread);
       String setString = (char *)userCommand.lastread;
       int setMinutes = setString.toInt();
-      portENTER_CRITICAL(&timerMux2);
-      shakeMinuteCounter = setMinutes;
-      portEXIT_CRITICAL(&timerMux2);
-      timerRestart(timer2);
+      startShakerCounting(setMinutes);
     }
-  
+
 
     switch (state) {
 
       case 0:
-      core0Sleep();
-      break;
+        commandCoreSleep();
+        break;
 
       case 1:
-        core0Idle();
+        commandCoreIdle();
         break;
 
-        case 2:
-        core0Drive();
+      case 2:
+        commandCoreDrive();
         break;
-
     }
 
     // this is our 'wait for incoming subscription packets' busy subloop
@@ -272,73 +368,166 @@ void Task1code(void *pvParameters) {
 }
 
 
-void core0Sleep() {
+void commandCoreSleep() {
   // if button or knob press, go to state 1
+  if (mainButtonIsPressed == true) {
+    mainButtonIsPressed = false;
+    state = 1;
+  }
+  
 
   // if google service, go to state 2
   if (shakeMinuteCounter > 0) {
     state = 2;
-  }
 
-  
+  }
 }
 
-void core0Idle() {
-   // if google service, go to state 2
+void commandCoreIdle() {
+  // if google service calls, go to state 2
   if (shakeMinuteCounter > 0) {
     state = 2;
   }
 
+  // if (rotaryButtonIsPressed) {
+  //   rotaryButtonIsPressed = false;
+  //   Serial.println("rotaryButton is Pressed");
+  // }
+
+
+  // // check time, if larger than 5 mins, turn off display
+  // if (millis() - hourglassTimeComp >= 5000) {
+  //   state = 0;
+  //   lcd.clear();
+  // }
 }
 
-void core0Drive() {
+void commandCoreDrive() {
   // if large button press, go back to state 1
+  if (mainButtonIsPressed == true) {
+    mainButtonIsPressed = false;
+    state = 1;
+    stopShakerCounting();
+  }
 
   // if google service cancels, go to state 1
   if (shakeMinuteCounter == 0) {
     state = 1;
-  }  
+    stopShakerCounting();
+  }
+}
 
+void stopShakerCounting() {
+  lcd.clear();
+  portENTER_CRITICAL_ISR(&timerMux2);
+shakeMinuteCounter = 0;
+  portEXIT_CRITICAL_ISR(&timerMux2);
+  shakeMinutePrevCounter = 0;
+  timerStop(timer2);
+
+}
+
+void startShakerCounting(int setMinutes) {
+  portENTER_CRITICAL(&timerMux2);
+      shakeMinuteCounter = setMinutes;
+      portEXIT_CRITICAL(&timerMux2);
+       shakeMinutePrevCounter = shakeMinuteCounter;
+      timerRestart(timer2);
 }
 
 
 void Task2code(void *parameter) {
   // motor core setup function
   motorCoreSetup();
+  Serial.println(state);
 
   // motor core loop function
   for (;;) {
-    // switch (state) {
-    //   case 0:
-    //     state0MotorCore();
-    //     break;
-    //   case 1:
-    //     state1MotorCore();
-    //     break;
-    // }
-   
-// writeVoltage(150);
+    Serial.println(state);
 
-    if (shakeMinuteCounter > 0) {
-      setSpeed(vDes);
-      
-    } else {
-      timerStop(timer2);
+    // motor core does modify state, only observe
+    switch (state) {
 
-      // po  rtENTER_CRITICAL(&timerMux2);
-      //  minuteCounter = 0;
-      //   portEXIT_CRITICAL(&timerMux2);
-      stopMoving();
-      
+      case 0:
+        // sleeping
+        motorCoreSleep();
+        break;
 
-      // Serial.println(String() + "speed is: "+ count);
+      case 1:
+        // idle
+        motorCoreIdle();
+        break;
+
+      case 2:
+        // drive
+        motorCoreDrive();
+        break;
     }
-    Serial.println(String() + "speed is: " + count);
-    // important so that the watchdog bug doesnt get triggered
-    Serial.println(shakeMinuteCounter);
     vTaskDelay(10);
   }
   vTaskDelete(NULL);
+}
+
+void motorCoreSleep() {
+  stopMoving();
+  // display off function below
+  lcd.noDisplay();
+}
+
+void motorCoreIdle() {
+  stopMoving();
+  // display on
+  lcd.display();
+  // display text
+  lcd.setCursor(0, 0);
+  lcd.print("Welcome!");
+  lcd.setCursor(0, 1);
+  lcd.print("state 1");
+  lcd.print("  ");
+  lcd.print(rotaryCount);
+}
+void motorCoreDrive() {
+  // display new set text
+  lcd.display();
+
+// update screen once every minute
+  if (shakeMinuteCounter - shakeMinutePrevCounter != 0) {
+    lcd.clear();
+    shakeMinutePrevCounter = shakeMinuteCounter;
+  }
+    // set the cursor to the top left
+  lcd.setCursor(0, 0);
+  lcd.write(2);  // write in the smiley face
+  lcd.print(" Shaking");
+  int currentTime = millis();
+  lcd.print("...");
+  lcd.setCursor(0, 1);
+
+  if (currentTime - hourglassTimeComp < hourglassFlashTime / 2) {
+    lcd.write(byte(0));
+
+  } else if (currentTime - hourglassTimeComp < hourglassFlashTime) {
+    lcd.write(byte(1));
+  } 
+  if (currentTime - hourglassTimeComp >= hourglassFlashTime) {
+    hourglassTimeComp = currentTime;
+  }
+
+  lcd.print(" Time Rem: ");
+  if (shakeMinuteCounter > 60) {
+    int displayTime = shakeMinuteCounter % 60;
+    lcd.print(displayTime);
+    
+    lcd.setCursor(15, 1);
+    lcd.print("h");
+  } else {
+    lcd.print(shakeMinuteCounter);
+    lcd.setCursor(15, 1);
+    lcd.print("m");
+  }
+
+  // set speed
+  setSpeed(vDes);
 }
 
 
@@ -346,9 +535,19 @@ void Task2code(void *parameter) {
 
 void motorCoreSetup() {
   Serial.println("check 1");
+
+  // create a new character
+  lcd.createChar(0, hourglass_down);
+  // create a new character
+  lcd.createChar(1, hourglass_up);
+  // create a new character
+  lcd.createChar(2, smiley);
+
   ESP32Encoder::useInternalWeakPullResistors = UP;  // Enable the weak pull up resistors
   encoder.attachHalfQuad(encoderY, encoderW);       // Attache pins for use as encoder pins
   encoder.setCount(0);                              // set starting count value after attaching
+  rotary.attachHalfQuad(rotaryA, rotaryB);       // Attache pins for use as encoder pins
+  rotary.setCount(0);                              // set starting count value after attaching
 
   timer0 = timerBegin(0, 80, true);              // timer 0, MWDT clock period = 12.5 ns * TIMGn_Tx_WDT_CLK_PRESCALE -> 12.5 ns * 80 -> 1000 ns = 1 us, countUp
   timerAttachInterrupt(timer0, &onTime0, true);  // edge (not level) triggered
@@ -359,9 +558,9 @@ void motorCoreSetup() {
   timerAttachInterrupt(timer1, &onTime1, true);  // edge (not level) triggered
   timerAlarmWrite(timer1, 10000, true);          // 10000 * 1 us = 10 ms, autoreload true
   timerAlarmEnable(timer1);                      // enable
-  
-  
-  
+
+
+
   timer2 = timerBegin(2, 80, true);              // timer 2, MWDT clock period = 12.5 ns * TIMGn_Tx_WDT_CLK_PRESCALE -> 12.5 ns * 80 -> 1000 ns = 1 us, countUp
   timerAttachInterrupt(timer2, &onTime2, true);  // edge (not level) triggered
   timerAlarmWrite(timer2, 60000000, true);       // 60000000 * 1 us = 60 s, autoreload true
@@ -369,21 +568,30 @@ void motorCoreSetup() {
 }
 
 
+
+
+
+
+
+
+// driving functions
+
 void stopMoving() {
   writeVoltage(0);
 }
 
 // command core code (core 0)
 void commandCoreSetup() {
+
   Serial.println();
   Serial.println();
 
 
-  
+
   Serial.print("Connecting to ");
   Serial.println(WLAN_SSID);
 
-  
+
   WiFi.begin(WLAN_SSID, WLAN_PASS);
 
   while (WiFi.status() != WL_CONNECTED) {
@@ -489,4 +697,18 @@ void MQTT_connect() {
   }
 
   Serial.println("MQTT Connected!");
+}
+
+void rotary_onButtonClick()
+{
+	static unsigned long lastTimePressed = 0;
+	//ignore multiple press in that time milliseconds
+	if (millis() - lastTimePressed < 200)
+	{
+		return;
+	}
+	lastTimePressed = millis();
+	Serial.print("button pressed ");
+	Serial.print(millis());
+	Serial.println(" milliseconds after restart");
 }

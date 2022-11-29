@@ -10,8 +10,8 @@
 // 14 desireable speed when motor running
 
 #define NOM_VDES 14
-#define MAX_VDES 44
-int vDes = NOM_VDES;
+#define MAX_VDES 19
+int vDes = MAX_VDES;
 
 
 int prevDifference = 0;
