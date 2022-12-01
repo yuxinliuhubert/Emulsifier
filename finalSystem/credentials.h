@@ -9,3 +9,8 @@
 
 #define WLAN_SSID "3Yellow1Brown"
 #define WLAN_PASS "Carolisqueen"
+// #define WLAN_SSID "wifi123"
+// #define WLAN_PASS "hubert123"
+
+#define CONNECTION_TIMEOUT 10000
+#define hotspot true

@@ -49,7 +49,8 @@
 #define D5 15
 #define D4 27
 
-#define mainButton 25
+#define mainButton 32
+#define mainButtonLight 25
 
 #define ROTARY_ENCODER_A_PIN 22
 #define ROTARY_ENCODER_B_PIN 14
@@ -67,7 +68,6 @@
 #define MODE_LED_BEHAVIOUR "MODE"
 
 #define ZUMO_FAST 255
-#define CONNECTION_TIMEOUT 2000
 
 
 // state machine set up
@@ -313,6 +313,7 @@ void setup() {
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
   pinMode(13, OUTPUT);
+  pinMode(mainButtonLight, OUTPUT);
   pinMode(mainButton, INPUT_PULLDOWN);
   // pinMode(rotaryBTN, INPUT_PULLDOWN);
   attachInterrupt(mainButton, isr, RISING);
@@ -339,6 +340,61 @@ void setup() {
    */
   //rotaryEncoder.disableAcceleration(); //acceleration is now enabled by default - disable if you dont need it
 
+  // create a new character
+  lcd.createChar(0, hourglass_down);
+  // create a new character
+  lcd.createChar(1, hourglass_up);
+  // create a new character
+  lcd.createChar(2, smiley);
+  lcd.createChar(3, wifi);
+  lcd.createChar(4, heart);
+
+ Serial.println();
+  Serial.println();
+
+  lcd.setCursor(3, 0);
+  lcd.print("Welcome! ");
+  lcd.write(2);
+  lcd.setCursor(0, 1);
+  lcd.print("Initializing...");
+
+
+  Serial.print("Connecting to ");
+  Serial.println(WLAN_SSID);
+if (hotspot) {
+WiFi.mode(WIFI_STA);
+}
+
+  WiFi.begin(WLAN_SSID, WLAN_PASS);
+
+int connectTime = millis();
+  while (WiFi.status() != WL_CONNECTED) {
+    if (millis() - connectTime >= CONNECTION_TIMEOUT) {
+      break;
+
+  } 
+  }
+
+if (WiFi.status() == WL_CONNECTED) {
+  Serial.println();
+
+
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+
+
+  // Setup MQTT subscription for onoff feed.
+  mqtt.subscribe(&userCommand);
+
+  // Set Adafruit IO's root CA
+  client.setCACert(adafruitio_root_ca);
+  // networkEnabled = true;
+  
+} else {
+  networkEnabled = false;
+  state = 1;
+}
 
   xTaskCreatePinnedToCore(
     Task1code, /* Task function. */
@@ -371,12 +427,15 @@ void Task1code(void *pvParameters) {
 
   // the loop function on command core
   while (1) {
-    if (networkEnabled) {
+    if (!networkEnabled && state == 0) {
 
     // Ensure the connection to the MQTT server is alive (this will make the first
     // connection and automatically reconnect when disconnected).  See the MQTT_connect
     // function definition further below.
     MQTT_connect();
+    }
+    if (networkEnabled) {
+      MQTT_connect();
     Adafruit_MQTT_Subscribe *subscription;
     subscription = mqtt.readSubscription(100);
     if (subscription == &userCommand) {
@@ -392,7 +451,13 @@ void Task1code(void *pvParameters) {
     if (rotaryEncoder.isEncoderButtonClicked()) {
       rotary_onButtonClick();
     }
-    Serial.println(rotaryCount);
+    // Serial.println(rotaryCount);
+  
+      if (count > 0) {
+      turnButtonLightOn();
+    } else {
+      turnButtonLightOff();
+    }
 
 
     switch (state) {
@@ -437,6 +502,11 @@ void commandCoreStartUp() {
 }
 
 void commandCoreIdle() {
+
+  if (rotaryButtonIsPressed && mainButtonPressed()) {
+    ESP.restart();
+    
+  }
   // if google service calls, go to state 2
   if (shakeMinuteCounter > 0) {
     state = 2;
@@ -495,10 +565,12 @@ void commandCoreIdle() {
 void commandCoreDrive() {
   // if large button press, go back to state 1
   if (mainButtonPressed()) {
+    // if (rotaryButtonIsPressed) {
+  //  rotaryButtonIsPressed = false;
     mainButtonIsPressed = false;
-    stopShakerCounting();
     state = 1;
     displayUpdate = true;
+    stopShakerCounting();
     // stopShakerCounting();
   }
 
@@ -513,12 +585,12 @@ void commandCoreDrive() {
 
 void stopShakerCounting() {
   lcd.clear();
-  timerStop(timer2);
+  // timerStop(timer2);
   portENTER_CRITICAL_ISR(&timerMux2);
   shakeMinuteCounter = 0;
   portEXIT_CRITICAL_ISR(&timerMux2);
   shakeMinutePrevCounter = 0;
-  // timerStop(timer2);
+  timerStop(timer2);
 }
 
 void startShakerCounting(int setMinutes) {
@@ -540,7 +612,8 @@ void Task2code(void *parameter) {
 
   // motor core loop function
   for (;;) {
-    // Serial.println(state);
+    Serial.println(state);
+  
 
     // motor core does modify state, only observe
     switch (state) {
@@ -580,6 +653,7 @@ void motorCoreIdle() {
   stopMoving();
   if (autoComplete) {
     autoComplete = false;
+    lcd.clear();
     int displayCompleteTime = millis();
     while (millis() - displayCompleteTime <= 2000) {
       lcd.setCursor(0,0);
@@ -654,10 +728,10 @@ void motorCoreDrive() {
   } else {
     switch (rotaryCount) {
       case 1:
-        vDes = 13;
+        vDes = 15;
         break;
       case 2:
-        vDes = 16;
+        vDes = 17;
         break;
       case 3:
         vDes = MAX_VDES;
@@ -719,14 +793,7 @@ lcd.print("x");
 void motorCoreSetup() {
   Serial.println("check 1");
 
-  // create a new character
-  lcd.createChar(0, hourglass_down);
-  // create a new character
-  lcd.createChar(1, hourglass_up);
-  // create a new character
-  lcd.createChar(2, smiley);
-  lcd.createChar(3, wifi);
-  lcd.createChar(4, heart);
+
 
   ESP32Encoder::useInternalWeakPullResistors = UP;  // Enable the weak pull up resistors
   encoder.attachHalfQuad(encoderY, encoderW);       // Attache pins for use as encoder pins
@@ -769,46 +836,8 @@ void stopMoving() {
 // command core code (core 0)
 void commandCoreSetup() {
 
-  Serial.println();
-  Serial.println();
+ 
 
-
-
-  Serial.print("Connecting to ");
-  Serial.println(WLAN_SSID);
-
-
-  WiFi.begin(WLAN_SSID, WLAN_PASS);
-
-int connectTime = millis();
-  while (WiFi.status() != WL_CONNECTED) {
-    if (millis() - connectTime >= CONNECTION_TIMEOUT) {
-      break;
-
-  } 
-  }
-
-if (WiFi.status() == WL_CONNECTED) {
-  Serial.println();
-
-
-  Serial.println("WiFi connected");
-  Serial.println("IP address: ");
-  Serial.println(WiFi.localIP());
-
-
-  // Setup MQTT subscription for onoff feed.
-  mqtt.subscribe(&userCommand);
-
-  // Set Adafruit IO's root CA
-  client.setCACert(adafruitio_root_ca);
-  networkEnabled = true;
-} else {
-  networkEnabled = false;
-}
-
-
-  state = 1;
 }
 
 
@@ -879,8 +908,9 @@ void MQTT_connect() {
   // Stop if already connected.
   if (mqtt.connected()) {
     return;
-  }
+  } 
 
+networkEnabled = false;
   Serial.print("Connecting to MQTT... ");
 
   uint8_t retries = 3;
@@ -898,6 +928,8 @@ void MQTT_connect() {
   }
 
   Serial.println("MQTT Connected!");
+  networkEnabled = true;
+  state = 1;
 }
 
 void rotary_onButtonClick() {
@@ -917,9 +949,19 @@ void rotary_onButtonClick() {
 
 bool mainButtonPressed() {
   if (buttonBufferComplete) {
-    buttonBufferComplete = false;
+    portENTER_CRITICAL_ISR(&timerMux0);
+  buttonBufferComplete = false;  // the function to be called when timer interrupt is triggered
+  portEXIT_CRITICAL_ISR(&timerMux0);
     return mainButtonIsPressed;
   } else {
     return false;
   }
+}
+
+void turnButtonLightOn() {
+digitalWrite(mainButtonLight, HIGH);  
+}
+
+void turnButtonLightOff() {
+  digitalWrite(mainButtonLight, LOW);
 }
