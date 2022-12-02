@@ -12,5 +12,5 @@
 // #define WLAN_SSID "wifi123"
 // #define WLAN_PASS "hubert123"
 
-#define CONNECTION_TIMEOUT 10000
+#define CONNECTION_TIMEOUT 5000
 #define hotspot true

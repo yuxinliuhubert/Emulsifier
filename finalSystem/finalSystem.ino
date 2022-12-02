@@ -51,6 +51,7 @@
 
 #define mainButton 32
 #define mainButtonLight 25
+#define reset 26
 
 #define ROTARY_ENCODER_A_PIN 22
 #define ROTARY_ENCODER_B_PIN 14
@@ -315,6 +316,7 @@ void setup() {
   pinMode(13, OUTPUT);
   pinMode(mainButtonLight, OUTPUT);
   pinMode(mainButton, INPUT_PULLDOWN);
+  pinMode(reset, INPUT_PULLDOWN);
   // pinMode(rotaryBTN, INPUT_PULLDOWN);
   attachInterrupt(mainButton, isr, RISING);
   // attachInterrupt(rotaryBTN, rotaryIsr, RISING);
@@ -427,6 +429,10 @@ void Task1code(void *pvParameters) {
 
   // the loop function on command core
   while (1) {
+    if (digitalRead(reset) == HIGH) {
+      ESP.restart();
+
+    };
     if (!networkEnabled && state == 0) {
 
     // Ensure the connection to the MQTT server is alive (this will make the first
@@ -437,7 +443,7 @@ void Task1code(void *pvParameters) {
     if (networkEnabled) {
       MQTT_connect();
     Adafruit_MQTT_Subscribe *subscription;
-    subscription = mqtt.readSubscription(100);
+    subscription = mqtt.readSubscription();
     if (subscription == &userCommand) {
       Serial.print(F("Got: "));
       Serial.println((char *)userCommand.lastread);
@@ -666,7 +672,7 @@ void motorCoreIdle() {
   }
   if (displayUpdate) {
     lcd.clear();
-    lcd.display();
+    // lcd.display();
     displayUpdate = false;
     // display on
     lcd.setCursor(0, 0);
@@ -715,7 +721,7 @@ void motorCoreIdle() {
 }
 void motorCoreDrive() {
   // display new set text
-  lcd.display();
+  // lcd.display();
 
 
   // if (shakeMinuteCounter == 0) {
